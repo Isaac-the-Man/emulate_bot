@@ -10,6 +10,8 @@ GAUSSIANBLUR_KERNEL = (7,7)
 HSV_MIN = (47,87,44)
 HSV_MAX = (101,255,255)
 MIN_TILE_AREA = 200
+MAX_TILE_COUNT = 4
+MIN_LINE_AREA = 150
 THRESHED_LOW = 35
 THRESHED_HIGH = 255
 SPLIT_PORTION = 1/9
@@ -35,20 +37,23 @@ def locate_green(hsv_img):
     _, contours, _ = cv2.findContours(green_ROI_img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     print('Total contours found: {}'.format(len(contours)))
 
+    # sort area from large to small, only MAX_TILE_COUNT of tiles is allowed
+    contours.sort(key=cv2.contourArea, reverse=True)
+    contours = contours[:MAX_TILE_COUNT]        # only top areas are left
+
     # filter out contours that has too small area
-    cnts_c = []
+    cnts_c = []     # contour centers
+    filtered_cnts = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area <= MIN_TILE_AREA:
-            contours.remove(cnt)
-        else:
+        if area >= MIN_TILE_AREA:
+            filtered_cnts.append(cnt)
             M = cv2.moments(cnt)
             cx = int(M['m10']/M['m00'])
             cy = int(M['m01']/M['m00'])
             cnts_c.append((cx,cy))
     print('Real contours found: {}'.format(len(contours)))
-
-    return contours, cnts_c
+    return filtered_cnts, cnts_c
 
 # get the ROI, which is a trapezoid
 def get_ROI(img):
@@ -70,12 +75,16 @@ def scan_slice(img):
 
     # find contour and midpoint
     _, contours, _ = cv2.findContours(slice_img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    M = cv2.moments(contours[0])
-    area = cv2.contourArea(contours[0])
-    cx = int(M['m10']/M['m00'])
-    cy = int(M['m01']/M['m00']) + slice_h
-
-    return n_slice_img, slice_img, [(cx, cy), area ]
+    if len(contours) > 0:
+        print('line contours found: {}'.format(len(contours)))
+        M = cv2.moments(contours[0])
+        area = cv2.contourArea(contours[0])
+        cx = int(M['m10']/M['m00'])
+        cy = int(M['m01']/M['m00']) + slice_h
+        return n_slice_img, slice_img, [(cx, cy), area ]
+    else:
+        print('no line contours found')
+        return n_slice_img, slice_img, None
 
 # algorithm to calculate direction with midpoint
 def get_direction(img, midpoint):
@@ -109,9 +118,10 @@ def process(input_img):
 
     # locate the green tiles, and draw the center
     cnts, cnts_c = locate_green(hsv_img)
-    cv2.drawContours(output_img, cnts, -1, (0,255,0), 3)
-    for cx,cy in cnts_c:
-        cv2.circle(output_img, (cx,cy), 5, (255,0,0), -1)
+    if cnts_c and cnts is not None:      # filter out the case where there is not green tiles found
+        cv2.drawContours(output_img, cnts, -1, (0,255,0), 3)
+        for cx,cy in cnts_c:
+            cv2.circle(output_img, (cx,cy), 5, (255,0,0), -1)
 
     # grey, threshold, and get ROI
     grey_img = cv2.cvtColor(blurred_img.copy(), cv2.COLOR_BGR2GRAY)
@@ -120,12 +130,13 @@ def process(input_img):
 
     # get line midpoint using contours
     _, slice_img, midpoint = scan_slice(ROI_img)
-    cv2.circle(output_img, midpoint[0], 5, (0,0,255), -1)
+    if midpoint is not None:       # filters out the case for no midline found
+        cv2.circle(output_img, midpoint[0], 5, (0,0,255), -1)
 
-    # get the direction
-    turn = get_direction(ROI_img, midpoint)
-    print('The turn is {}'.format(turn*180/np.pi))
-    cv2.line(output_img, (int(width/2), 0), (int(width/2), height), (255,0,0), 3)
+        # get the direction
+        turn = get_direction(ROI_img, midpoint)
+        print('The turn is {}'.format(turn*180/np.pi))
+        cv2.line(output_img, (int(width/2), 0), (int(width/2), height), (255,0,0), 3)
 
     img_bundle = [blurred_img, hsv_img, grey_img, threshed_img, ROI_img, slice_img, output_img]
     return img_bundle
